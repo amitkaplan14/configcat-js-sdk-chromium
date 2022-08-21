@@ -6,25 +6,48 @@ export class HttpConfigFetcher implements IConfigFetcher {
         lastEtag: string,
         callback: (result: FetchResult) => void,
     ): void {
-        const httpRequest: XMLHttpRequest = new XMLHttpRequest();
-        httpRequest.onreadystatechange = () => {
-            if (httpRequest.readyState === 4) {
-                const etag: string = httpRequest.getResponseHeader("ETag");
-                if (httpRequest.status === 200) {
-                    callback(FetchResult.success(httpRequest.responseText, etag));
-                } else if (httpRequest.status === 304) {
-                    callback(FetchResult.notModified());
-                } else {
-                    options.logger.error(
-                        `Failed to download feature flags & settings from ConfigCat. ${httpRequest.status} - ${httpRequest.statusText}`,
-                    );
-                    callback(FetchResult.error());
-                }
-            }
-        };
+      const fetchId = Math.round(Math.random() * 100000);
+      const alarmName = `fetcher-${fetchId}`;
+      if (options.requestTimeoutMs) {
+        chrome.alarms.create(alarmName, {when: Date.now() + options.requestTimeoutMs});
 
-        httpRequest.open("GET", options.getUrl(), true);
-        httpRequest.timeout = options.requestTimeoutMs;
-        httpRequest.send(null);
+        chrome.alarms.onAlarm.addListener((alarm => {
+          if (alarm.name === alarmName) {
+            options.logger.error(
+              `Failed to download feature flags & settings from ConfigCat. Timed-out.`,
+            );
+            callback(FetchResult.error())
+          }
+        }));
+      }
+        fetch(options.getUrl(), {
+          method: 'GET'
+        })
+          .then( async (response) => {
+            const text = await response.text();
+            if (options.requestTimeoutMs) {
+              chrome.alarms.clear(alarmName).then();
+            }
+              const etag: string = response.headers && response.headers.get('Etag');
+              if (response.status === 200) {
+                  callback(FetchResult.success(text, etag))
+              } else if (response.status === 304) {
+                  callback(FetchResult.notModified());
+              } else {
+                  options.logger.error(
+                    `Failed to download feature flags & settings from ConfigCat. ${response.status} - ${response.statusText}`,
+                  );
+                  callback(FetchResult.error());
+              }
+          })
+          .catch((error) => {
+              options.logger.error(
+                `Failed to download feature flags & settings from ConfigCat. Error: ${error}`,
+              );
+            if (options.requestTimeoutMs) {
+              chrome.alarms.clear(alarmName).then();
+            }
+              callback(FetchResult.error());
+          })
     }
 }
